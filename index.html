@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>AlertBrief</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="Turns a raw SIGNL4-style alert into a 10-second brief: is it real, likely cause, first checks, related alerts. Built only from data in the alert and its history. Synthetic data.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=Public+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one working screen. Phone (what lands today) beside the brief (what could land), pipeline trace underneath. */
+:root{
+  --bg:#f2f4f8; --surface:#ffffff; --ink:#131726; --mute:#5b6378; --line:#dde1ea; --soft:#eef1f7;
+  --accent:#2446c9; --accent-soft:#e6ebfb;
+  --real:#b8322a; --real-soft:#fbeae8; --noise:#9a6300; --noise-soft:#fdf2dc; --calm:#1d7a4f; --calm-soft:#e3f2ea;
+  --phone-bg:#11151f; --phone-card:#1e2432; --phone-ink:#eef1f7; --phone-mute:#98a1b6; --phone-line:#2b3242;
+  --display:"Familjen Grotesk","Segoe UI",system-ui,sans-serif;
+  --body:"Public Sans","Segoe UI",system-ui,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0c0f16; --surface:#141924; --ink:#e7eaf2; --mute:#8e96aa; --line:#252c3a; --soft:#1a2030;
+  --accent:#8aa2ff; --accent-soft:#1c2442;
+  --real:#f08a80; --real-soft:#2d1716; --noise:#eab95a; --noise-soft:#2a2112; --calm:#6fcf9b; --calm-soft:#14261c;
+  --phone-bg:#05070b; --phone-card:#171c27; --phone-line:#232a38; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0c0f16; --surface:#141924; --ink:#e7eaf2; --mute:#8e96aa; --line:#252c3a; --soft:#1a2030;
+  --accent:#8aa2ff; --accent-soft:#1c2442;
+  --real:#f08a80; --real-soft:#2d1716; --noise:#eab95a; --noise-soft:#2a2112; --calm:#6fcf9b; --calm-soft:#14261c;
+  --phone-bg:#05070b; --phone-card:#171c27; --phone-line:#232a38; color-scheme:dark}
+
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font:15px/1.55 var(--body);margin:0}
+.wrap{max-width:1180px;margin:0 auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:28px 56px}
+h1,h2,h3{font-family:var(--display);text-wrap:balance;margin:0;letter-spacing:-.01em}
+.mono{font-family:var(--mono)}
+.label{font-size:11.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--mute);font-weight:600}
+
+header{display:flex;flex-wrap:wrap;gap:12px 24px;align-items:flex-end;justify-content:space-between;margin-bottom:22px}
+header h1{font-size:30px;font-weight:700}
+header p{margin:4px 0 0;color:var(--mute);max-width:62ch}
+.synthetic{font-size:12.5px;color:var(--noise);background:var(--noise-soft);padding:5px 10px;border-radius:6px;font-weight:500}
+
+.tabs{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:18px}
+.tabs button{font:600 14px var(--body);color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:8px 15px;cursor:pointer;display:flex;gap:8px;align-items:center}
+.tabs button:hover{border-color:var(--accent)}
+.tabs button[aria-selected="true"]{background:var(--accent);border-color:var(--accent);color:var(--surface)}
+.tabs .n{font:500 12px var(--mono);opacity:.75}
+button:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+.stage{display:grid;grid-template-columns:minmax(0,340px) minmax(0,1fr);gap:22px;align-items:start}
+@media (max-width:860px){.stage{grid-template-columns:minmax(0,1fr)}}
+
+/* Phone: deliberately dark in both themes, it is a lock screen at night */
+.phone{background:var(--phone-bg);color:var(--phone-ink);border-radius:30px;padding:18px 12px 14px;border:1px solid var(--phone-line);max-width:340px;width:100%;margin:0 auto}
+.phone .clock{text-align:center;font:600 46px/1 var(--display);letter-spacing:-.02em}
+.phone .date{text-align:center;color:var(--phone-mute);font-size:13px;margin:4px 0 12px}
+.phone .count{display:flex;justify-content:space-between;align-items:center;padding:0 6px 8px;font-size:12.5px;color:var(--phone-mute)}
+.phone .count b{color:var(--phone-ink)}
+.stack{display:flex;flex-direction:column;gap:6px;max-height:430px;overflow-y:auto;padding:2px;scrollbar-width:thin}
+.notif{background:var(--phone-card);border-radius:14px;padding:9px 11px;font-size:12.5px;line-height:1.4}
+.notif .top{display:flex;justify-content:space-between;color:var(--phone-mute);font-size:11px;margin-bottom:2px}
+.notif .t{font-weight:600}
+.notif .m{color:var(--phone-mute);overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.notif.in{animation:drop .32s ease-out both}
+@keyframes drop{from{transform:translateY(-8px);opacity:.2}to{transform:none;opacity:1}}
+.phone .replay{display:block;margin:10px auto 0;font:600 12.5px var(--body);background:transparent;color:var(--phone-ink);border:1px solid var(--phone-line);border-radius:999px;padding:6px 14px;cursor:pointer}
+.caption{text-align:center;color:var(--mute);font-size:13px;margin:10px 0 0}
+
+/* Brief */
+.briefs{display:flex;flex-direction:column;gap:16px;min-width:0}
+.brief{background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.brief-head{padding:18px 20px 14px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:10px}
+.verdict{display:inline-flex;align-items:center;gap:8px;font:700 12px var(--body);letter-spacing:.06em;text-transform:uppercase;padding:5px 10px;border-radius:6px;align-self:flex-start}
+.verdict::before{content:"";width:8px;height:8px;border-radius:50%;background:currentColor}
+.v-real{color:var(--real);background:var(--real-soft)} .v-noise{color:var(--noise);background:var(--noise-soft)} .v-calm{color:var(--calm);background:var(--calm-soft)}
+.brief-head h2{font-size:21px;line-height:1.3;font-weight:600}
+.meta{display:flex;flex-wrap:wrap;gap:6px 16px;color:var(--mute);font-size:13px}
+.meta b{color:var(--ink);font-weight:600}
+.sec{padding:14px 20px;border-bottom:1px solid var(--line);display:grid;grid-template-columns:120px minmax(0,1fr);gap:6px 16px}
+.sec:last-child{border-bottom:0}
+@media (max-width:560px){.sec{grid-template-columns:minmax(0,1fr)}}
+.sec > div:not(.label){display:flex;flex-direction:column;gap:10px;min-width:0}
+.sec ol,.sec ul{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:10px}
+.sec p{margin:0}
+.line{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:baseline}
+.prov{font:500 10.5px var(--mono);padding:1px 6px;border-radius:4px;border:1px solid var(--line);color:var(--mute);white-space:nowrap}
+.prov.alert{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
+.prov.history{color:var(--calm);border-color:var(--calm)}
+.prov.derived{color:var(--mute)}
+.prov.guidance{color:var(--noise);border-color:var(--noise)}
+.related{display:flex;flex-direction:column;gap:4px;font-size:13.5px}
+.related .row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;padding:4px 0;border-bottom:1px dashed var(--line)}
+.related .row:last-child{border-bottom:0}
+.related .cnt{font:500 12.5px var(--mono);color:var(--mute);font-variant-numeric:tabular-nums}
+code{font-family:var(--mono);font-size:.9em;background:var(--soft);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+
+.guard{padding:12px 20px;background:var(--soft);display:flex;flex-direction:column;gap:8px;font-size:13.5px}
+.guard .ok{color:var(--calm);font-weight:600}
+.guard details summary{cursor:pointer;color:var(--accent);font-weight:600}
+.blocked{margin-top:8px;border-left:3px solid var(--real);padding:8px 12px;background:var(--surface);border-radius:6px;display:flex;flex-direction:column;gap:6px}
+.blocked s{color:var(--mute)}
+.chip{font:500 11.5px var(--mono);padding:1px 6px;border-radius:4px;background:var(--real-soft);color:var(--real)}
+.chip.okc{background:var(--calm-soft);color:var(--calm)}
+
+/* Pipeline trace */
+.how{margin-top:28px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+@media (max-width:860px){.how{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:480px){.how{grid-template-columns:minmax(0,1fr)}}
+.step{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:6px}
+.step .k{font:600 26px/1 var(--display);font-variant-numeric:tabular-nums}
+.step h3{font-size:15px;font-weight:600}
+.step p{margin:0;color:var(--mute);font-size:13px}
+.raw{margin-top:16px}
+.raw summary{cursor:pointer;font-weight:600;color:var(--accent)}
+.raw pre{margin:10px 0 0;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px;overflow-x:auto;font:12.5px/1.5 var(--mono)}
+footer{margin-top:32px;padding-top:18px;border-top:1px solid var(--line);color:var(--mute);font-size:13px;display:flex;flex-wrap:wrap;gap:8px 24px;justify-content:space-between}
+@media (prefers-reduced-motion:reduce){.notif.in{animation:none}}
+</style>
+</head>
+<body>
+
+
+<div class="wrap">
+  <header>
+    <div>
+      <div class="label">Briefing layer for on-call alerts</div>
+      <h1>AlertBrief</h1>
+      <p>The alert already reaches the right person. This decides what they read when it does: is it real, what probably happened, what to check first, and what else is firing. Every fact comes from the alert itself or the team's own alert history. Nothing is configured per customer and nothing is invented.</p>
+    </div>
+    <span class="synthetic">All data synthetic. No real system is represented.</span>
+  </header>
+
+  <div class="tabs" role="tablist" id="tabs"></div>
+
+  <div class="stage">
+    <div>
+      <div class="phone" aria-label="What lands on the phone today">
+        <div class="clock" id="clock">03:12</div>
+        <div class="date" id="date">Saturday 7 November</div>
+        <div class="count"><span><b id="pageCount">0</b> <span id="pageWord">pages</span></span><span id="pageSpan"></span></div>
+        <div class="stack" id="stack"></div>
+        <button class="replay" id="replay" type="button">Replay arrival</button>
+      </div>
+      <p class="caption">What lands on the phone today</p>
+    </div>
+    <div class="briefs" id="briefs" aria-live="polite"></div>
+  </div>
+
+  <section class="how" id="how" aria-label="How the brief was built"></section>
+
+  <details class="raw">
+    <summary>Show the raw alerts as received (SIGNL4 webhook shape)</summary>
+    <pre id="rawjson"></pre>
+  </details>
+
+  <footer>
+    <span>Built by Omons Wisdom (Osas) · github.com/OsasDTEch</span>
+    <span>Correlation, verdicts and every sentence are computed in code from the data shown. A language model can rephrase a brief; the guard decides what survives.</span>
+  </footer>
+</div>
+
+<script>
+/* ---------- Synthetic alerts, shaped like SIGNL4 inbound webhooks ---------- */
+const DAY = "2026-11-07";
+const t = (hms) => `${DAY}T${hms}Z`;
+let extId = 7310;
+function A(time, title, message, host, service, extra = {}) {
+  return Object.assign({
+    "Title": title, "Message": message, "Host": host, "Source": extra.Source || "Prometheus Alertmanager",
+    "Time (UTC)": t(time), "X-S4-Service": service, "X-S4-ExternalID": `INC${extId++}`,
+    "X-S4-Status": "new", "X-S4-AlertingScenario": extra.scenario || "single_ack"
+  }, extra.fields || {});
+}
+
+function stormAlerts() {
+  extId = 7310;
+  const out = [
+    A("03:11:42", "Memory usage 97% on orders-db-01", "mem_used_pct=97 threshold=90 for 5m", "orders-db-01", "Database", { fields: { Metric: "mem_used_pct", Value: "97", Threshold: "90" } }),
+    A("03:12:05", "Process killed by OOM killer on orders-db-01", "Out of memory: Killed process 2214 (postgres) on orders-db-01", "orders-db-01", "Database", { fields: { Process: "postgres", PID: "2214" } }),
+    A("03:12:09", "Health check failed: orders-db-01:5432", "TCP connect to orders-db-01:5432 failed", "orders-db-01", "Database"),
+  ];
+  const api = ["checkout-api-1", "checkout-api-2", "checkout-api-3", "checkout-api-4"];
+  api.forEach((h, i) => out.push(A(`03:12:1${2 + i}`, `Connection refused to orders-db-01:5432`, `${h}: dial tcp orders-db-01:5432: connect: connection refused`, h, "Checkout")));
+  [["03:12:40", 38], ["03:13:40", 41], ["03:14:40", 44]].forEach(([tm, rate], r) =>
+    api.forEach((h, i) => out.push(A(tm.replace(/:40$/, `:4${i}`), `HTTP 5xx rate ${rate + i}% on ${h}`, `5xx_rate=${rate + i}% threshold=5%; upstream errors: orders-db-01:5432 connection refused`, h, "Checkout"))));
+  ["03:12:30", "03:13:30", "03:14:30"].forEach((tm) =>
+    ["payments-worker-1", "payments-worker-2"].forEach((h, i) => out.push(A(tm.replace(/30$/, `3${i}`), `Job failures on ${h}`, `${h}: could not connect to orders-db-01:5432; 0 of last 50 jobs succeeded`, h, "Payments"))));
+  [["03:13:05", "6,200"], ["03:14:05", "12,900"], ["03:15:05", "18,400"]].forEach(([tm, d]) =>
+    out.push(A(tm, `Queue depth ${d} on payments-queue`, `depth=${d} threshold=5,000; consumers payments-worker-1, payments-worker-2 not acknowledging`, "mq-01", "Messaging")));
+  [["03:13:20", "4.1"], ["03:14:20", "4.6"], ["03:15:20", "4.8"]].forEach(([tm, s]) =>
+    out.push(A(tm, `p99 latency ${s}s on /checkout`, `p99=${s}s threshold=1.5s; slow upstream checkout-api`, "edge-gw-01", "Edge")));
+  ["03:13:50", "03:14:50", "03:15:50"].forEach((tm) =>
+    out.push(A(tm, "Checkout synthetic check failed", "POST /checkout returned 502 from 3 of 3 regions; backend checkout-api", "synthetic-monitor", "Edge", { Source: "Synthetic monitoring" })));
+  out.push(A("03:13:02", "Health check failed: orders-db-01:5432", "TCP connect to orders-db-01:5432 failed (2nd consecutive)", "orders-db-01", "Database"));
+  out.push(A("03:14:02", "Health check failed: orders-db-01:5432", "TCP connect to orders-db-01:5432 failed (3rd consecutive)", "orders-db-01", "Database"));
+  out.push(A("03:14:15", "TLS certificate expires in 6 days on auth-gw-01", "Certificate CN=auth.internal.example expires 2026-11-13; days_left=6", "auth-gw-01", "Identity", { Source: "Certificate monitor", fields: { DaysLeft: "6" } }));
+  return out.sort((a, b) => a["Time (UTC)"].localeCompare(b["Time (UTC)"]));
+}
+function diskAlerts() {
+  extId = 6120;
+  return [A("02:47:31", "Disk usage 94% on /var/log on search-index-02", "disk_used_pct=94 threshold=90 mount=/var/log growth=3% per hour", "search-index-02", "Search", { fields: { Mount: "/var/log", Value: "94", Threshold: "90" } })];
+}
+function flapAlerts() {
+  extId = 5904;
+  return [A("02:03:12", "CPU 92% on batch-worker-03", "cpu_used_pct=92 threshold=85 for 1m", "batch-worker-03", "Batch", { fields: { Metric: "cpu_used_pct", Value: "92", Threshold: "85" } })];
+}
+
+/* ---------- The team's own alert history (what SIGNL4 already records: acks, auto-resolves, notes) ---------- */
+const HISTORY = {
+  "oom_killed|orders-db-01": { fired7d: 0 },
+  "mem_high|orders-db-01": { fired7d: 2, acked: 2, autoResolvedFast: 0, notes: [] },
+  "disk_full|search-index-02": { fired7d: 3, acked: 3, autoResolvedFast: 0,
+    notes: ["rotated /var/log by hand, logrotate entry missing on search-index-02"] },
+  "cpu_high|batch-worker-03": { fired7d: 23, acked: 0, autoResolvedFast: 21, fastMins: 4, window: "02:00 and 02:10 UTC", notes: [] },
+  "cert_expiry|auth-gw-01": { fired7d: 1, acked: 0, autoResolvedFast: 0, notes: [] },
+};
+
+/* ---------- Signature library: generic per alert type, never per customer ---------- */
+const SIGS = [
+  { id: "oom_killed", re: /OOM killer|out of memory/i, name: "Process killed for memory", severe: true },
+  { id: "health_fail", re: /health check failed/i, name: "Health check failing", severe: true },
+  { id: "conn_refused", re: /connection refused/i, name: "Connection refused", severe: true },
+  { id: "mem_high", re: /memory usage/i, name: "Memory high" },
+  { id: "http_5xx", re: /5xx rate/i, name: "Error rate high" },
+  { id: "job_fail", re: /job failures/i, name: "Jobs failing" },
+  { id: "queue_backlog", re: /queue depth/i, name: "Queue backing up" },
+  { id: "latency", re: /latency/i, name: "Latency high" },
+  { id: "synthetic", re: /synthetic check/i, name: "User journey failing" },
+  { id: "disk_full", re: /disk usage/i, name: "Disk filling" },
+  { id: "cpu_high", re: /^CPU/i, name: "CPU high" },
+  { id: "cert_expiry", re: /certificate expires/i, name: "Certificate expiring" },
+];
+const sigOf = (a) => (SIGS.find((s) => s.re.test(a.Title)) || { id: "unknown", name: "Other" });
+
+/* ---------- 1. Correlate: only names and times found in the alerts themselves ---------- */
+function correlate(alerts, windowMin = 15) {
+  const vocab = new Set(alerts.map((a) => a.Host));
+  const parent = alerts.map((_, i) => i);
+  const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  const union = (i, j) => { parent[find(i)] = find(j); };
+  const mentions = (a) => {
+    const text = `${a.Title} ${a.Message}`;
+    const out = new Set();
+    vocab.forEach((h) => { if (h !== a.Host && text.includes(h)) out.add(h); });
+    // a service family named without a number (e.g. "checkout-api") links to its hosts
+    vocab.forEach((h) => { const fam = h.replace(/-\d+$/, ""); if (fam !== h && h !== a.Host && new RegExp(`\\b${fam}\\b(?!-\\d)`).test(text)) out.add(h); });
+    return out;
+  };
+  const ms = alerts.map(mentions);
+  const tms = alerts.map((a) => Date.parse(a["Time (UTC)"]));
+  for (let i = 0; i < alerts.length; i++) for (let j = i + 1; j < alerts.length; j++) {
+    if (Math.abs(tms[i] - tms[j]) > windowMin * 60000) continue;
+    if (alerts[i].Host === alerts[j].Host || ms[i].has(alerts[j].Host) || ms[j].has(alerts[i].Host)) union(i, j);
+  }
+  const groups = new Map();
+  alerts.forEach((a, i) => { const r = find(i); if (!groups.has(r)) groups.set(r, []); groups.get(r).push({ a, mentions: ms[i] }); });
+  return [...groups.values()].map((items) => {
+    // root host: the host other alerts in the group point at most; ties go to the earliest
+    const score = new Map();
+    items.forEach(({ mentions }) => mentions.forEach((h) => score.set(h, (score.get(h) || 0) + 1)));
+    const hosts = [...new Set(items.map((x) => x.a.Host))];
+    hosts.sort((x, y) => (score.get(y) || 0) - (score.get(x) || 0) ||
+      items.find((i) => i.a.Host === x).a["Time (UTC)"].localeCompare(items.find((i) => i.a.Host === y).a["Time (UTC)"]));
+    const rootHost = hosts[0];
+    return { alerts: items.map((x) => x.a), rootHost, namers: items.filter((x) => x.mentions.has(rootHost)).map((x) => x.a) };
+  }).sort((g, h) => h.alerts.length - g.alerts.length);
+}
+
+/* ---------- 2 + 3. Compose the brief: every line carries where its facts came from ---------- */
+const hhmmss = (iso) => iso.slice(11, 19);
+const L = (text, prov) => ({ text, prov });
+
+function brief(group) {
+  const al = group.alerts;
+  const root = al.filter((a) => a.Host === group.rootHost);
+  const rootSigs = root.map((a) => ({ a, s: sigOf(a) }));
+  const has = (id) => rootSigs.find((x) => x.s.id === id);
+  const downstream = al.filter((a) => a.Host !== group.rootHost);
+  const services = [...new Set(downstream.map((a) => a["X-S4-Service"]))];
+  const first = al[0], last = al[al.length - 1];
+  const out = { verdict: null, headline: "", meta: [], isReal: [], cause: [], checks: [], related: [], derived: [] };
+  const D = (v) => { out.derived.push(String(v)); return v; };
+
+  const main = rootSigs[0];
+  const histKey = (id) => `${id}|${group.rootHost}`;
+
+  // ---- Verdict, computed from alert fields and history only
+  const h = HISTORY[histKey(main.s.id)] || { fired7d: 0, acked: 0, autoResolvedFast: 0, notes: [] };
+  const noiseRatio = h.fired7d ? h.autoResolvedFast / h.fired7d : 0;
+  const severe = rootSigs.some((x) => x.s.severe);
+  const days = Number(main.a.DaysLeft || NaN);
+
+  if (h.fired7d >= 10 && noiseRatio >= 0.8 && h.acked === 0 && !severe) {
+    out.verdict = { cls: "v-noise", text: "Likely noise" };
+    out.isReal.push(L(`This alert fired ${h.fired7d} times in the last 7 days. ${h.autoResolvedFast} of those cleared on their own within ${h.fastMins} minutes and nobody acknowledged any of them.`, ["history"]));
+    out.isReal.push(L(`They cluster between ${h.window}, the same window as this one at ${hhmmss(main.a["Time (UTC)"])} UTC.`, ["history", "alert"]));
+  } else if (!Number.isNaN(days)) {
+    out.verdict = { cls: "v-calm", text: "Real, not urgent tonight" };
+    out.isReal.push(L(`Real: the certificate expires in ${main.a.DaysLeft} days. Nothing is broken yet, so this can wait for working hours.`, ["alert"]));
+  } else {
+    out.verdict = { cls: "v-real", text: "Likely real" };
+    if (has("oom_killed")) out.isReal.push(L(`The kernel killed ${has("oom_killed").a.Process} (PID ${has("oom_killed").a.PID}) on ${group.rootHost}. That is an event, not a threshold that might be jittering.`, ["alert"]));
+    if (group.namers.length) {
+      const namerSvcs = new Set(group.namers.map((a) => a["X-S4-Service"]));
+      out.isReal.push(L(`${D(group.namers.length)} alerts from ${D(namerSvcs.size)} other services independently name ${group.rootHost} as the thing they cannot reach.`, ["alert", "derived"]));
+    }
+    if (!has("oom_killed") && h.fired7d) out.isReal.push(L(`This alert fired ${h.fired7d} times in the last 7 days and was acknowledged by a person every time.`, ["history"]));
+  }
+
+  // ---- Headline + cause
+  if (has("oom_killed")) {
+    const m = has("mem_high");
+    out.headline = `${group.rootHost} ran out of memory and ${has("oom_killed").a.Process} was killed. ${D(downstream.length)} alerts from ${D(services.length)} other services are fallout from it.`;
+    if (m) out.cause.push(L(`Memory on ${group.rootHost} reached ${m.a.Value}% (threshold ${m.a.Threshold}%) at ${hhmmss(m.a["Time (UTC)"])} UTC.`, ["alert"]));
+    out.cause.push(L(`At ${hhmmss(has("oom_killed").a["Time (UTC)"])} UTC the kernel killed ${has("oom_killed").a.Process} (PID ${has("oom_killed").a.PID}).`, ["alert"]));
+    if (has("health_fail")) out.cause.push(L(`From ${hhmmss(has("health_fail").a["Time (UTC)"])} UTC, ${group.rootHost}:5432 stopped accepting connections. Every downstream alert reports that same refused connection, directly or through a service that depends on it.`, ["alert"]));
+    const mh = HISTORY[histKey("mem_high")];
+    if (mh) out.cause.push(L(`Memory crossed the threshold on ${group.rootHost} ${mh.fired7d} times earlier this week. Each time it was acknowledged and recovered. This is the first time it ended in a kill.`, ["history"]));
+    out.checks = [
+      L(`Confirm ${has("oom_killed").a.Process} is down on ${group.rootHost} and whether it has restarted on its own.`, ["guidance", "alert"]),
+      L(`Look at what was using memory just before ${hhmmss(has("oom_killed").a["Time (UTC)"])} UTC. The kernel log on ${group.rootHost} lists the largest processes at the moment of the kill.`, ["guidance", "alert"]),
+      L(`Once ${group.rootHost}:5432 accepts connections again, the ${D(downstream.length)} downstream alerts should clear without separate action. Watch the queue on payments-queue drain rather than restarting the workers.`, ["guidance", "alert", "derived"]),
+    ];
+  } else if (main.s.id === "disk_full") {
+    out.headline = `${main.a.Mount} on ${group.rootHost} is at ${main.a.Value}% and growing. The same alert was fixed by hand ${h.fired7d} times this week.`;
+    out.cause.push(L(`${main.a.Mount} is ${main.a.Value}% full (threshold ${main.a.Threshold}%) and growing about 3% per hour.`, ["alert"]));
+    if (h.notes.length) out.cause.push(L(`Previous resolution note on this alert: "${h.notes[0]}".`, ["history"]));
+    out.checks = [
+      L(`Check whether log rotation ran on ${group.rootHost}. The last resolution note points at it.`, ["guidance", "history"]),
+      L(`At about 3% per hour, ${main.a.Mount} has a few hours left, so this can be handled now rather than escalated.`, ["guidance", "alert"]),
+      L(`Rotating logs clears tonight's page. Restoring the logrotate entry stops the next one.`, ["guidance", "history"]),
+    ];
+  } else if (main.s.id === "cpu_high") {
+    out.headline = `CPU spike on ${group.rootHost}. It has fired ${h.fired7d} times this week and cleared on its own almost every time.`;
+    out.cause.push(L(`CPU is at ${main.a.Value}% against a threshold of ${main.a.Threshold}%, held for 1 minute.`, ["alert"]));
+    out.cause.push(L(`The pattern matches a scheduled job: a short spike between ${h.window} that clears within ${h.fastMins} minutes.`, ["history"]));
+    out.checks = [
+      L(`If it is still above ${main.a.Threshold}% in ${h.fastMins} minutes, treat it as real. It has never stayed that long this week.`, ["guidance", "history", "alert"]),
+      L(`Tomorrow, consider a ${h.fastMins} minute delay on this rule in the source. It would still page for a sustained spike and would have skipped ${h.autoResolvedFast} of this week's ${h.fired7d} pages.`, ["guidance", "history"]),
+    ];
+  } else if (main.s.id === "cert_expiry") {
+    out.headline = `A certificate on ${group.rootHost} expires in ${main.a.DaysLeft} days. It is unrelated to anything else firing.`;
+    out.cause.push(L(`${main.a.Message.split(";")[0]}.`, ["alert"]));
+    out.checks = [L(`Renew before the expiry date. No action is needed tonight.`, ["guidance"])];
+  }
+
+  out.meta = [
+    ["Alerts", D(al.length)], ["Started", `${hhmmss(first["Time (UTC)"])} UTC`],
+    ["Services", D(new Set(al.map((a) => a["X-S4-Service"])).size)], ["Root", group.rootHost],
+  ];
+  if (al.length > 1) out.meta.splice(2, 0, ["Last", `${hhmmss(last["Time (UTC)"])} UTC`]);
+
+  // ---- Related alerts, grouped by service, in order of arrival
+  const bySvc = new Map();
+  al.forEach((a) => { const k = `${a["X-S4-Service"]} · ${sigOf(a).name}`; bySvc.set(k, (bySvc.get(k) || 0) + 1); });
+  out.related = [...bySvc.entries()];
+  return out;
+}
+
+/* ---------- 4. Fabrication guard: every name and number must exist in the source ---------- */
+const FACT_RE = /\b\d[\d,.:]*%?|\b[a-z]+(?:-[a-z0-9]+)+\b|\/[a-z/]+\b/g;
+function guard(b, group) {
+  const source = JSON.stringify(group.alerts) + JSON.stringify(Object.entries(HISTORY).filter(([k]) => group.alerts.some((a) => k.endsWith(`|${a.Host}`))));
+  const allowed = new Set(b.derived.map(String));
+  const lines = [...b.isReal, ...b.cause, ...b.checks, L(b.headline, [])];
+  const checked = [], failed = [];
+  lines.forEach((ln) => (ln.text.match(FACT_RE) || []).forEach((f) => {
+    const v = f.replace(/[.,:]$/, "");
+    if (!v) return;
+    const bare = v.replace(/%$/, "");
+    const ok = source.includes(v) || source.includes(bare) || allowed.has(v) || allowed.has(bare);
+    (ok ? checked : failed).push(v);
+  }));
+  return { checked, failed };
+}
+function guardSentence(sentence, b, group) {
+  return guard({ ...b, isReal: [], cause: [L(sentence, [])], checks: [], headline: "" }, group);
+}
+const MODEL_DRAFTS = {
+  storm: "Most likely the nightly backup on orders-db-02 started at 03:00 and exhausted memory.",
+  disk: "This is usually caused by a runaway debug log from search-api after the 2.4 deploy.",
+  flap: "Probably a memory leak in the image resize service that needs a restart.",
+};
+
+/* ---------- Rendering ---------- */
+const SCEN = [
+  { id: "storm", label: "Storm at 03:12", make: stormAlerts },
+  { id: "disk", label: "Disk filling", make: diskAlerts },
+  { id: "flap", label: "Flapping CPU", make: flapAlerts },
+];
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const PROV = { alert: "from alert", history: "from history", derived: "counted", guidance: "general guidance" };
+const line = (l) => `<div class="line"><span>${esc(l.text)}</span>${[...new Set(l.prov)].map((p) => `<span class="prov ${p}">${PROV[p]}</span>`).join("")}</div>`;
+let current = "storm", timer = null;
+
+function renderTabs() {
+  $("tabs").innerHTML = SCEN.map((s) => {
+    const n = s.make().length;
+    return `<button role="tab" type="button" id="tab-${s.id}" aria-selected="${s.id === current}" data-id="${s.id}">${esc(s.label)}<span class="n">${n} ${n === 1 ? "page" : "pages"}</span></button>`;
+  }).join("");
+  $("tabs").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => { current = b.dataset.id; render(true); }));
+}
+
+function renderPhone(alerts, animate) {
+  clearInterval(timer);
+  const stack = $("stack");
+  const lastT = alerts[alerts.length - 1]["Time (UTC)"];
+  $("clock").textContent = lastT.slice(11, 16);
+  const span = alerts.length > 1 ? Math.round((Date.parse(lastT) - Date.parse(alerts[0]["Time (UTC)"])) / 60000) : 0;
+  $("pageSpan").textContent = alerts.length > 1 ? `in ${span} minutes` : "";
+  $("pageWord").textContent = alerts.length === 1 ? "page" : "pages";
+  const card = (a, cls = "") => `<div class="notif ${cls}"><div class="top"><span>SIGNL4 · ${esc(a["X-S4-Service"])}</span><span>${hhmmss(a["Time (UTC)"]).slice(0, 5)}</span></div><div class="t">${esc(a.Title)}</div><div class="m">${esc(a.Message)}</div></div>`;
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const newest = [...alerts].reverse();
+  if (!animate || reduce || alerts.length === 1) {
+    stack.innerHTML = newest.map((a) => card(a)).join("");
+    $("pageCount").textContent = alerts.length;
+    return;
+  }
+  stack.innerHTML = ""; let i = 0;
+  timer = setInterval(() => {
+    if (i >= alerts.length) return clearInterval(timer);
+    stack.insertAdjacentHTML("afterbegin", card(alerts[i], "in"));
+    $("pageCount").textContent = ++i;
+  }, 70);
+}
+
+function renderBriefs(groups) {
+  $("briefs").innerHTML = groups.map((g, gi) => {
+    const b = brief(g);
+    const gd = guard(b, g);
+    const draft = gi === 0 ? MODEL_DRAFTS[current] : null;
+    const dg = draft ? guardSentence(draft, b, g) : null;
+    return `<article class="brief">
+      <div class="brief-head">
+        <span class="verdict ${b.verdict.cls}">${esc(b.verdict.text)}</span>
+        <h2>${esc(b.headline)}</h2>
+        <div class="meta">${b.meta.map(([k, v]) => `<span>${esc(k)} <b>${esc(v)}</b></span>`).join("")}</div>
+      </div>
+      <div class="sec"><div class="label">Is it real?</div><div>${b.isReal.map(line).join("")}</div></div>
+      <div class="sec"><div class="label">What happened</div><div>${b.cause.map(line).join("")}</div></div>
+      <div class="sec"><div class="label">Check first</div><ol>${b.checks.map((c) => `<li>${line(c)}</li>`).join("")}</ol></div>
+      ${g.alerts.length > 1 ? `<div class="sec"><div class="label">Related alerts</div><div class="related">${b.related.map(([k, n]) => `<div class="row"><span>${esc(k)}</span><span class="cnt">${n}</span></div>`).join("")}</div></div>` : ""}
+      <div class="guard">
+        <div><span class="${gd.failed.length ? "chip" : "ok"}">${gd.failed.length ? `Guard blocked ${gd.failed.length} untraced facts` : `Guard: all ${gd.checked.length} names and numbers in this brief trace to the source data.`}</span></div>
+        ${draft ? `<details><summary>See a model sentence the guard rejects</summary>
+          <div class="blocked">
+            <span class="label">Example of what a model might add</span>
+            <s>${esc(draft)}</s>
+            <div>${dg.failed.map((f) => `<span class="chip">${esc(f)} not in source</span>`).join(" ")} ${dg.checked.map((f) => `<span class="chip okc">${esc(f)} found</span>`).join(" ")}</div>
+            <span>Rejected. ${dg.failed.length} of its facts do not appear in the alert or its history, so it never reaches the engineer.</span>
+          </div></details>` : ""}
+      </div>
+    </article>`;
+  }).join("");
+}
+
+function renderHow(alerts, groups) {
+  const facts = groups.reduce((n, g) => n + guard(brief(g), g).checked.length, 0);
+  const hist = groups.filter((g) => Object.keys(HISTORY).some((k) => k.endsWith(`|${g.rootHost}`))).length;
+  $("how").innerHTML = [
+    [alerts.length, "Alerts in", "Raw webhooks, exactly as a monitoring tool sends them to SIGNL4."],
+    [groups.length, groups.length === 1 ? "Incident" : "Incidents", "Grouped by host names and times found in the alerts. Nothing configured per customer."],
+    [hist, "History lookups", "How often this fired this week, how often people acknowledged it, and what they wrote when they closed it."],
+    [facts, "Facts traced", "Every name and number in the brief, matched against the source before the brief is sent."],
+  ].map(([k, h, p]) => `<div class="step"><div class="k">${k}</div><h3>${h}</h3><p>${p}</p></div>`).join("");
+}
+
+function render(animate = false) {
+  const alerts = SCEN.find((s) => s.id === current).make();
+  const groups = correlate(alerts);
+  renderTabs();
+  renderPhone(alerts, animate);
+  renderBriefs(groups);
+  renderHow(alerts, groups);
+  $("rawjson").textContent = JSON.stringify(alerts.length > 3 ? alerts.slice(0, 3) : alerts, null, 2) + (alerts.length > 3 ? `\n\n… and ${alerts.length - 3} more` : "");
+}
+
+$("replay").addEventListener("click", () => renderPhone(SCEN.find((s) => s.id === current).make(), true));
+render(false);
+</script>
+
+</body>
+</html>
